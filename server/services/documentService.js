@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { mkdir, writeFile, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import * as pdfParseModule from 'pdf-parse';
+import { inflateSync } from 'node:zlib';
 import mammoth from 'mammoth';
 import * as cheerio from 'cheerio';
 
@@ -38,23 +38,39 @@ export function validateUpload(file, { asset = false } = {}) {
   return ext;
 }
 
-async function parsePdfSafely(buffer) {
-  const PDFParseClass = pdfParseModule.PDFParse || pdfParseModule.default?.PDFParse;
-  if (typeof PDFParseClass === 'function') {
-    const parser = new PDFParseClass({ data: buffer });
-    const result = await parser.getText();
-    return { text: result?.text || '', pages: result?.total || null };
-  }
-  const legacyFn = typeof pdfParseModule.default === 'function' ? pdfParseModule.default : pdfParseModule;
-  if (typeof legacyFn === 'function') {
-    const parsed = await legacyFn(buffer);
-    return { text: parsed?.text || '', pages: parsed?.numpages || null };
-  }
+function extractTextFromPdfBuffer(buffer) {
   const raw = buffer.toString('latin1');
-  const matches = [...raw.matchAll(/\(([^()\\]*(?:\\.[^()\\]*)*)\)\s*Tj/g)].map((m) =>
-    m[1].replace(/\\([()\\])/g, '$1')
-  );
-  return { text: matches.join('\n'), pages: 1 };
+  const chunks = [raw];
+
+  // Decompress any FlateDecode PDF streams using built-in Node zlib
+  const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let match;
+  while ((match = streamRegex.exec(raw)) !== null) {
+    try {
+      const inflated = inflateSync(Buffer.from(match[1], 'latin1')).toString('latin1');
+      chunks.push(inflated);
+    } catch {
+      // Uncompressed stream; already included in raw
+    }
+  }
+
+  const lines = [];
+  for (const chunk of chunks) {
+    const tjMatches = chunk.matchAll(/\(([^()\\]*(?:\\.[^()\\]*)*)\)\s*Tj/g);
+    for (const m of tjMatches) {
+      lines.push(m[1].replace(/\\([()\\])/g, '$1'));
+    }
+    const tjArrayMatches = chunk.matchAll(/\[([\s\S]*?)\]\s*TJ/g);
+    for (const arr of tjArrayMatches) {
+      const inner = [...arr[1].matchAll(/\(([^()\\]*(?:\\.[^()\\]*)*)\)/g)]
+        .map((s) => s[1].replace(/\\([()\\])/g, '$1'))
+        .join('');
+      if (inner) lines.push(inner);
+    }
+  }
+
+  const pageCount = (raw.match(/\/Type\s*\/Page\b/g) || []).length || 1;
+  return { text: lines.join('\n').trim(), pages: pageCount };
 }
 
 export async function extractBuffer(buffer, ext) {
@@ -62,7 +78,7 @@ export async function extractBuffer(buffer, ext) {
   const structure = { headings: [], links: [], images: [] };
   try {
     if (ext === '.pdf') {
-      const parsed = await parsePdfSafely(buffer);
+      const parsed = extractTextFromPdfBuffer(buffer);
       text = parsed.text;
       metadata.pages = parsed.pages;
     } else if (ext === '.docx') {
@@ -84,8 +100,7 @@ export async function extractBuffer(buffer, ext) {
       text = buffer.toString('utf8').replace(/^\uFEFF/, '');
     }
   } catch (err) {
-    console.error('File extraction error:', err);
-    throw Object.assign(new Error('The file could not be read. It may be corrupted or password-protected.'), { status: 422 });
+    throw Object.assign(new Error(`Extraction failed: ${err.message}`), { status: 422 });
   }
   text = text.replace(/\u0000/g, '').trim();
   if (!text) throw Object.assign(new Error('No readable text was found in this file. It may be empty, image-only or corrupted.'), { status: 422 });
