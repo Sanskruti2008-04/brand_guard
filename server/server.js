@@ -56,6 +56,11 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
+// Keep your existing 404 handler at the very bottom (after frontend routes)
+app.use((_req, res) => {
+  res.status(404).json({ message: 'The requested API endpoint was not found.' });
+});
+
 try {
   await connectDatabase();
   app.listen(port, '0.0.0.0', () => console.info(`BrandGuard API listening on ${port}`));
