@@ -51,8 +51,7 @@ if (process.env.NODE_ENV === 'production') {
   const clientDistPath = path.resolve(__dirname, '../client/dist');
   app.use(express.static(clientDistPath));
 
-  // Fallback for React Router client-side routes
-  app.get('*', (_req, res) => {
+  app.get('/{*splat}', (_req, res) => {
     res.sendFile(path.join(clientDistPath, 'index.html'));
   });
 }
