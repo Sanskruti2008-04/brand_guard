@@ -1,17 +1,64 @@
+import { randomUUID } from 'node:crypto';
+
+const CATEGORIES = ['tone','claim','messaging','grammar','fact','terminology','accessibility','visual'];
+const SEVERITIES = ['critical','major','minor','info'];
+const allowedCategories = new Set(CATEGORIES);
+const allowedSeverity = new Set(SEVERITIES);
+
+// Small models occasionally drift from the requested schema. Accept the common
+// aliases so valid findings are not silently discarded.
+function inferCategory(text) {
+  const hay = String(text || '').toLowerCase();
+  if (/banned|preferred term|terminology|vocabulary/.test(hay)) return 'terminology';
+  if (/uptime|\bsla\b|certif|approved fact|downtime|guarantee|claim/.test(hay)) return 'fact';
+  if (/tone|superlative|hype|voice/.test(hay)) return 'tone';
+  if (/alt text|heading|link|accessib|readab/.test(hay)) return 'accessibility';
+  if (/grammar|spelling|punctuation/.test(hay)) return 'grammar';
+  return 'messaging';
+}
+function normalizeItem(item) {
+  if (!item || typeof item !== 'object') return null;
+  const start = item.span?.start ?? item.offset_start ?? item.start;
+  const end = item.span?.end ?? item.offset_end ?? item.end;
+  const normalized = {
+    ...item,
+    category: allowedCategories.has(item.category) ? item.category : inferredCategoryFor({ ...item, start, end }),
+    severity: allowedSeverity.has(item.severity) ? item.severity : 'minor',
+    title: item.title || item.issue || item.finding || 'Potential brand issue',
+    span: { start, end },
+    problematicText: item.problematicText ?? item.draft_text,
+    finding: item.finding || item.issue,
+    passageId: item.passageId ?? item.evidence_id ?? item.passage_id
+  };
+  return normalized;
+}
+function inferredCategoryFor(item) {
+  return inferCategory([item.category, item.title, item.issue, item.finding, item.explanation, item.problematicText, item.draft_text].filter(Boolean).join(' '));
+}
+
 export function validateAiFindings(items, { content, passages, facts, terminology }) {
-  const allowedCategories = new Set(['tone','claim','messaging','grammar','fact','terminology','accessibility','visual']);
-  const allowedSeverity = new Set(['critical','major','minor','info']);
   const sourceMap = new Map(passages.map(p => [p.passageId, p]));
   const result = [];
-  for (const item of Array.isArray(items) ? items : []) {
+  for (const raw of Array.isArray(items) ? items : []) {
+    const item = normalizeItem(raw);
+    if (!item) continue;
     if (!allowedCategories.has(item.category) || !allowedSeverity.has(item.severity)) continue;
     const quote = String(item.evidenceQuote || '').trim();
     const span = item.span || {};
-    const start = Number.isInteger(span.start) ? span.start : null;
-    const end = Number.isInteger(span.end) ? span.end : null;
+    let start = Number.isInteger(span.start) ? span.start : null;
+    let end = Number.isInteger(span.end) ? span.end : null;
     if (start === null || end === null || start < 0 || end <= start || end > content.length) continue;
-    const problematicText = content.slice(start, end);
-    if (item.problematicText && problematicText !== item.problematicText) continue;
+    let problematicText = content.slice(start, end);
+    if (item.problematicText && problematicText !== item.problematicText) {
+      // Offsets can drift by a unit or two (emoji/surrogate pairs are counted
+      // differently). Re-anchor to the exact quoted text instead of dropping.
+      const near = content.indexOf(item.problematicText, Math.max(0, start - 6));
+      const found = near >= 0 ? near : content.indexOf(item.problematicText);
+      if (found < 0) continue;
+      start = found;
+      end = found + item.problematicText.length;
+      problematicText = content.slice(start, end);
+    }
     const passage = sourceMap.get(item.passageId);
     let verified = false;
     let fact = null, term = null;
@@ -27,6 +74,7 @@ export function validateAiFindings(items, { content, passages, facts, terminolog
       if (term && quote && termText.includes(quote)) verified = true;
     }
     result.push({
+      issueId: randomUUID(),
       category: item.category, severity: item.severity, title: String(item.title || 'Potential brand issue').slice(0,180),
       span: { start, end }, problematicText, finding: String(item.finding || 'Potential issue identified.').slice(0,1200),
       explanation: String(item.explanation || 'Further review is recommended.').slice(0,2000),

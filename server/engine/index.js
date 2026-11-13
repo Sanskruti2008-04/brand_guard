@@ -15,7 +15,7 @@ export async function analyze({ documentId, brandId, organizationId, content, fo
   const warnings = [];
   const coverage = {
     tone: false,
-    terminology: knowledge.terminology.length > 0,
+    terminology: knowledge.terminology.length > 0 || Number(deterministic.metrics?.terminologyRulesFromGuidelines) > 0,
     fact: knowledge.facts.length > 0,
     messaging: knowledge.guidelines.length > 0,
     accessibility: true,
@@ -23,7 +23,7 @@ export async function analyze({ documentId, brandId, organizationId, content, fo
   };
   try {
     const ai = await reasonWithAI({ content: normalized.text, passages: knowledge.passages, facts: knowledge.facts, terminology: knowledge.terminology });
-    const aiFindings = validateAiFindings(ai.data?.findings, { content: normalized.text, passages: knowledge.passages, facts: knowledge.facts, terminology: knowledge.terminology });
+    const aiFindings = validateAiFindings(Array.isArray(ai.data) ? ai.data : ai.data?.findings, { content: normalized.text, passages: knowledge.passages, facts: knowledge.facts, terminology: knowledge.terminology });
     findings = [...findings, ...aiFindings];
     provider = ai.provider; model = ai.model; method = 'ai-assisted';
     coverage.tone = true;
@@ -32,6 +32,17 @@ export async function analyze({ documentId, brandId, organizationId, content, fo
   } catch (error) {
     warnings.push(`Deterministic analysis — AI provider unavailable. ${error.message}`);
   }
+  // The rules engine and the model often flag the same phrase. Keep the highest
+  // severity once per problematic phrase so reports are not duplicated.
+  const severityRank = { critical: 3, major: 2, minor: 1, info: 0 };
+  const byPhrase = new Map();
+  for (const item of findings) {
+    const key = String(item.problematicText || '').trim().toLowerCase();
+    if (!key) { byPhrase.set(Symbol('unique'), item); continue; }
+    const existing = byPhrase.get(key);
+    if (!existing || (severityRank[item.severity] ?? 0) > (severityRank[existing.severity] ?? 0)) byPhrase.set(key, item);
+  }
+  findings = [...byPhrase.values()];
   coverage.accessibility = true; // Text readability is always checked; structure-specific checks run when extraction provides structure.
   const score = calculateScore(findings, coverage);
   const counts = findings.reduce((acc,f)=>{ acc[f.severity]=(acc[f.severity]||0)+1; return acc; },{});
