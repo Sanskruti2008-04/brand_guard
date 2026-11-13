@@ -1,4 +1,6 @@
-export const API_URL = (import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5001/api' : '/api')).replace(/\/$/, '');
+// Relative by default: Vite proxies /api to the Express server in development,
+// and Express serves the built client from the same origin in production.
+export const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
 export async function api(path, options = {}) {
   const response = await fetch(`${API_URL}${path}`, {
