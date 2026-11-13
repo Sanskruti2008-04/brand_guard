@@ -23,11 +23,18 @@ router.post('/documents/:id/analyze', analysisLimiter, async (req,res,next) => {
     doc = await Document.findOne({ _id:req.params.id, ...scope(req) }).select('+extractedText');
     if (!doc) return res.status(404).json({ message:'Document not found or you do not have access.' });
     if (doc.extractionStatus !== 'complete' || !doc.extractedText?.trim()) return res.status(422).json({ message:'This document has no successfully extracted text. Re-upload or extract it before analysis.' });
+    // A crashed or restarted analysis can leave analysisStatus stuck on
+    // 'pending'. Treat a lock older than 10 minutes as stale so retries work.
+    const staleBefore = new Date(Date.now() - 10 * 60 * 1000);
     const lock = await Document.findOneAndUpdate(
-      { _id:doc._id, organizationId:req.user.organizationId, analysisStatus: { $ne:'pending' } },
-      { $set:{ analysisStatus:'pending' } }, { new:true }
+      {
+        _id: doc._id,
+        organizationId: req.user.organizationId,
+        $or: [{ analysisStatus: { $ne: 'pending' } }, { updatedAt: { $lt: staleBefore } }]
+      },
+      { $set: { analysisStatus: 'pending' } }, { new: true }
     );
-    if (!lock) return res.status(409).json({ message:'An analysis is already running for this document.' });
+    if (!lock) return res.status(409).json({ message: 'An analysis is already running for this document.' });
     try {
       const version = await DocumentVersion.findOne({ documentId:doc._id, organizationId:req.user.organizationId, versionNo:doc.version }).select('_id');
       const result = await analyze({
@@ -42,12 +49,14 @@ router.post('/documents/:id/analyze', analysisLimiter, async (req,res,next) => {
         dimensions:result.dimensions, coverage:result.coverage, findings:result.findings,
         summary:result.summary, warnings:result.warnings
       });
-      doc.analysisStatus='complete'; doc.latestAnalysisAt=new Date(); await doc.save();
+      // Use an atomic update: the in-memory `doc` was loaded before the lock, so
+      // doc.save() would not include analysisStatus and would leave it 'pending'.
+      await Document.updateOne({ _id: doc._id }, { $set: { analysisStatus: 'complete', latestAnalysisAt: new Date() } });
       await audit(req,'document.analysis_run','analysis',report._id,doc._id,{versionNo:doc.version,method:result.method,provider:result.provider,scoringVersion:result.scoringVersion});
       await logActivity({ organizationId:req.user.organizationId, actorId:req.user._id, action:'document.analyzed', entityType:'analysis', entityId:report._id, summary:`${req.user.name} analysed ${doc.title}` });
       return res.status(201).json({ analysis:report, metrics:result.metrics, issueCounts:result.issueCounts, retrieval:result.retrieval });
     } catch (error) {
-      doc.analysisStatus='failed'; await doc.save().catch(()=>{});
+      await Document.updateOne({ _id: doc._id }, { $set: { analysisStatus: 'failed' } }).catch(()=>{});
       throw error;
     }
   } catch(error) { next(error); }
@@ -62,7 +71,7 @@ router.get('/documents/:id/analyses', async(req,res,next)=>{
   }catch(error){next(error);}
 });
 
-router.get('/:analysisId', async(req,res,next)=>{
+router.get('/analyses/:analysisId', async(req,res,next)=>{
   try {
     if(!mongoose.isValidObjectId(req.params.analysisId))return res.status(400).json({message:'Invalid analysis identifier.'});
     const filter={_id:req.params.analysisId,organizationId:req.user.organizationId};
@@ -76,7 +85,7 @@ router.get('/:analysisId', async(req,res,next)=>{
   }catch(error){next(error);}
 });
 
-router.get('/:analysisId/findings', async(req,res,next)=>{
+router.get('/analyses/:analysisId/findings', async(req,res,next)=>{
   try {
     const filter={_id:req.params.analysisId,organizationId:req.user.organizationId};
     if(req.user.role!=='admin') {
@@ -89,7 +98,7 @@ router.get('/:analysisId/findings', async(req,res,next)=>{
   }catch(error){next(error);}
 });
 
-router.get('/:analysisId/score', async(req,res,next)=>{
+router.get('/analyses/:analysisId/score', async(req,res,next)=>{
   try {
     const filter={_id:req.params.analysisId,organizationId:req.user.organizationId};
     if(req.user.role!=='admin') {
@@ -102,7 +111,7 @@ router.get('/:analysisId/score', async(req,res,next)=>{
   }catch(error){next(error);}
 });
 
-router.patch('/:analysisId/findings/:findingId', async(req,res,next)=>{
+router.patch('/analyses/:analysisId/findings/:findingId', async(req,res,next)=>{
   try {
     const {status,reason=''}=req.body||{};
     if(!['accepted','dismissed','open'].includes(status))return res.status(400).json({message:'Choose accepted, dismissed or open.'});
@@ -123,7 +132,7 @@ router.patch('/:analysisId/findings/:findingId', async(req,res,next)=>{
   }catch(error){next(error);}
 });
 
-router.get('/:analysisId/history', async(req,res,next)=>{
+router.get('/analyses/:analysisId/history', async(req,res,next)=>{
   try {
     const filter={_id:req.params.analysisId,organizationId:req.user.organizationId};
     if(req.user.role!=='admin') {
