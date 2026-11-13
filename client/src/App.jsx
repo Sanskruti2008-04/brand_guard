@@ -6,7 +6,6 @@ import DashboardLayout from './layouts/DashboardLayout';
 import LandingPage from './pages/LandingPage';
 import AuthPage from './pages/AuthPage';
 import { AdminDashboard, EmployeeDashboard } from './pages/DashboardPage';
-import ComingSoon from './components/ComingSoon';
 import NotFoundPage from './pages/NotFoundPage';
 import PolicyPage from './pages/PolicyPage';
 import UploadPage from './pages/UploadPage';
@@ -17,6 +16,8 @@ import AnalysisPage from './pages/AnalysisPage';
 import DocumentWorkspacePage from './pages/DocumentWorkspacePage';
 import ReviewQueuePage from './pages/ReviewQueuePage';
 import InsightsPage from './pages/InsightsPage';
+import ReviewHistoryPage from './pages/ReviewHistoryPage';
+import SettingsPage from './pages/SettingsPage';
 import './styles/global.css';
 import './styles/landing.css';
 import './styles/app.css';
@@ -37,8 +38,8 @@ function AppRoutes() {
         <Route path="/workspace/review/:id" element={<DocumentWorkspacePage/>}/>
         <Route path="/workspace/documents" element={<DocumentsPage/>}/>
         <Route path="/workspace/documents/:id" element={<DocumentsPage/>}/>
-        <Route path="/workspace/history" element={<ComingSoon title="Review history"/>}/>
-        <Route path="/workspace/settings" element={<ComingSoon title="Account settings"/>}/>
+        <Route path="/workspace/history" element={<ReviewHistoryPage/>}/>
+        <Route path="/workspace/settings" element={<SettingsPage/>}/>
       </Route>
     </Route>
     <Route element={<ProtectedRoute role="admin"/>}>
@@ -52,7 +53,8 @@ function AppRoutes() {
         <Route path="/admin/review" element={<AnalysisPage role="admin"/>}/>
         <Route path="/admin/review/:id" element={<DocumentWorkspacePage role="admin"/>}/>
         <Route path="/admin/insights" element={<InsightsPage/>}/>
-        <Route path="/admin/settings" element={<ComingSoon title="Organisation settings"/>}/>
+        <Route path="/admin/history" element={<ReviewHistoryPage role="admin"/>}/>
+        <Route path="/admin/settings" element={<SettingsPage role="admin"/>}/>
       </Route>
     </Route>
     <Route path="/privacy" element={<PolicyPage/>}/>

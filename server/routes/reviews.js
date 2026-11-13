@@ -4,8 +4,45 @@ import {requireAuth,requireRole} from '../middleware/auth.js';
 import Review from '../models/Review.js';
 import Document from '../models/Document.js';
 import Analysis from '../models/Analysis.js';
+import User from '../models/User.js';
 import {accessibleDocument,snapshot,audit} from '../services/governanceService.js';
 const router=Router();router.use(requireAuth);
+const escapeRegex=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+router.get('/reviews/history',async(req,res,next)=>{try{
+ const page=Math.max(1,Number.parseInt(req.query.page,10)||1);
+ const limit=Math.min(50,Math.max(1,Number.parseInt(req.query.limit,10)||10));
+ const base={organizationId:req.user.organizationId};
+ if(req.user.role!=='admin')base.creatorId=req.user._id;
+ const filter={...base};
+ if(req.query.status&&req.query.status!=='all')filter.status=req.query.status;
+ const term=String(req.query.q||'').trim().slice(0,80);
+ if(term){
+  const regex=escapeRegex(term);
+  const documentIds=(await Document.find({organizationId:req.user.organizationId,title:{$regex:regex,$options:'i'}}).select('_id').limit(200)).map(d=>d._id);
+  const matches=[{documentId:{$in:documentIds}}];
+  if(req.user.role==='admin'){
+   const creatorIds=(await User.find({organizationId:req.user.organizationId,$or:[{name:{$regex:regex,$options:'i'}},{email:{$regex:regex,$options:'i'}}]}).select('_id').limit(200)).map(u=>u._id);
+   matches.push({creatorId:{$in:creatorIds}});
+  }
+  filter.$or=matches;
+ }
+ const [reviews,total,statusRows]=await Promise.all([
+  Review.find(filter)
+   .populate('documentId','title format version status')
+   .populate('creatorId','name email')
+   .populate('reviewerId','name')
+   .populate('comments.authorId','name')
+   .populate('analysisId','overallScore complianceStatus documentVersion')
+   .sort({submittedAt:-1,createdAt:-1})
+   .skip((page-1)*limit)
+   .limit(limit),
+  Review.countDocuments(filter),
+  Review.aggregate([{$match:base},{$group:{_id:'$status',count:{$sum:1}}}])
+ ]);
+ const summary={total:0,in_review:0,changes_requested:0,approved:0,superseded:0};
+ for(const row of statusRows){summary[row._id]=row.count;summary.total+=row.count;}
+ res.json({reviews,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))},summary});
+}catch(e){next(e)}});
 router.post('/documents/:id/submit',async(req,res,next)=>{try{
  const doc=await accessibleDocument(req,req.params.id);if(!doc)return res.status(404).json({message:'Document not found.'});
  const analysis=await Analysis.findOne({organizationId:req.user.organizationId,documentId:doc._id,documentVersion:doc.version}).sort({createdAt:-1});

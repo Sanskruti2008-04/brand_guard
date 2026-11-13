@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 
 const employeeLinks = [[LayoutDashboard,'Dashboard','/workspace'],[FileSearch,'Creator Workspace','/workspace/creator'],[ClipboardCheck,'Document Review','/workspace/review'],[BookOpen,'My Documents','/workspace/documents'],[FileClock,'Review History','/workspace/history'],[Settings,'Settings','/workspace/settings']];
-const adminLinks = [[LayoutDashboard,'Dashboard','/admin'],[BookOpen,'Brand Knowledge Base','/admin/knowledge'],[Users,'Employee Management','/admin/employees'],[BookOpen,'Organisation Documents','/admin/documents'],[ClipboardCheck,'Review Queue','/admin/queue'],[FileSearch,'Document Review','/admin/review'],[Activity,'Governance Insights','/admin/insights'],[Settings,'Settings','/admin/settings']];
+const adminLinks = [[LayoutDashboard,'Dashboard','/admin'],[BookOpen,'Brand Knowledge Base','/admin/knowledge'],[Users,'Employee Management','/admin/employees'],[BookOpen,'Organisation Documents','/admin/documents'],[ClipboardCheck,'Review Queue','/admin/queue'],[FileSearch,'Document Review','/admin/review'],[Activity,'Governance Insights','/admin/insights'],[FileClock,'Review History','/admin/history'],[Settings,'Settings','/admin/settings']];
 export default function DashboardLayout({ role }) {
   const [collapsed,setCollapsed] = useState(false); const [mobileOpen,setMobileOpen] = useState(false);
   const { user, logout } = useAuth(); const toast = useToast(); const navigate = useNavigate();

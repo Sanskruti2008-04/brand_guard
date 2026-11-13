@@ -20,7 +20,8 @@ const issueSession = (user, res) => {
 
 export async function registerEmployee(req, res, next) {
   try {
-    if (process.env.EMPLOYEE_REGISTRATION_ENABLED !== 'true') {
+    const organization = await getDefaultOrganization();
+    if (process.env.EMPLOYEE_REGISTRATION_ENABLED !== 'true' || organization.settings?.employeeRegistrationEnabled === false) {
       return res.status(403).json({
         message: 'Account registration is currently closed. Ask your organisation administrator for access.'
       });
@@ -51,7 +52,6 @@ export async function registerEmployee(req, res, next) {
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const organization = await getDefaultOrganization();
     const user = await User.create({
       organizationId: organization._id,
       name: name.trim(),

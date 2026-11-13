@@ -18,6 +18,7 @@ import correctionRoutes from './routes/corrections.js';
 import versionRoutes from './routes/versions.js';
 import reviewRoutes from './routes/reviews.js';
 import insightsRoutes from './routes/insights.js';
+import settingsRoutes from './routes/settings.js';
 import { errorHandler, notFound } from './utils/errors.js';
 
 const app = express();
@@ -54,6 +55,7 @@ app.use('/api', conversationRoutes);
 app.use('/api', correctionRoutes);
 app.use('/api', versionRoutes);
 app.use('/api', reviewRoutes);
+app.use('/api/settings', settingsRoutes);
 app.use('/api/brands/default/knowledge', knowledgeRoutes);
 
 const __filename = fileURLToPath(import.meta.url);
