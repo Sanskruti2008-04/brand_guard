@@ -11,9 +11,19 @@ export default function DocumentWorkspacePage({role='employee'}){
  const load=useCallback(async()=>{
   setPendingSuggestion(null);setCompare(null);setActive(null);
   try{
-   const [d,a,v,ev,rv]=await Promise.all([api(`/documents/${id}`),api(`/documents/${id}/analyses`),api(`/documents/${id}/versions`),api(`/documents/${id}/audit`),api(`/documents/${id}/reviews`)]);
-   setDoc(d.document);setContent(d.content||'');setHistory(a.analyses||[]);setVersions(v.versions||[]);setAuditEvents(ev.events||[]);setReviews(rv.reviews||[]);
-   const currentReport=(a.analyses||[]).find(x=>x.documentVersion===d.document.version);if(currentReport){const full=await api(`/analyses/${currentReport._id}`);setAnalysis(full.analysis);}else setAnalysis(null);
+   // Only the document and its reports are essential. Versions/audit/reviews are
+   // auxiliary, so a transient failure there must never blank the findings panel.
+   const [d,a]=await Promise.all([api(`/documents/${id}`),api(`/documents/${id}/analyses`)]);
+   setDoc(d.document);setContent(d.content||'');
+   const reports=a.analyses||[];setHistory(reports);
+   // Prefer the report for the current version, but fall back to the newest one
+   // so an existing analysis is never hidden just because the document was edited.
+   const currentReport=reports.find(x=>x.documentVersion===d.document.version)||reports[0]||null;
+   if(currentReport){const full=await api(`/analyses/${currentReport._id}`);setAnalysis(full.analysis);}else setAnalysis(null);
+   const [v,ev,rv]=await Promise.allSettled([api(`/documents/${id}/versions`),api(`/documents/${id}/audit`),api(`/documents/${id}/reviews`)]);
+   setVersions(v.status==='fulfilled'?(v.value.versions||[]):[]);
+   setAuditEvents(ev.status==='fulfilled'?(ev.value.events||[]):[]);
+   setReviews(rv.status==='fulfilled'?(rv.value.reviews||[]):[]);
    const cs=await api(`/documents/${id}/conversations`);
    if(cs.conversations?.length){const c=await api(`/conversations/${cs.conversations[0]._id}/messages`);setConversation(c.conversation);}
    else {const c=await api(`/documents/${id}/conversations`,{method:'POST',body:JSON.stringify({})});setConversation(c.conversation);}
@@ -38,13 +48,14 @@ export default function DocumentWorkspacePage({role='employee'}){
  }catch(e){toast(e.message,'error');}}
  async function rejectSuggestion(){if(!pendingSuggestion)return;try{await api(`/suggestions/${pendingSuggestion._id}/reject`,{method:'POST',body:JSON.stringify({})});setPendingSuggestion(null);toast('Suggestion rejected.');}catch(e){toast(e.message,'error');}}
  async function refreshVersions(){const v=await api(`/documents/${id}/versions`);setVersions(v.versions||[]);}
- async function reanalyse(){setBusy(true);try{await api(`/documents/${id}/analyze`,{method:'POST',body:JSON.stringify({})});await load();toast('New analysis completed.');}catch(e){toast(e.message,'error');}finally{setBusy(false);}}
+ async function reanalyse(){setBusy(true);try{const r=await api(`/documents/${id}/analyze`,{method:'POST',body:JSON.stringify({})});setAnalysis(r.analysis);setDoc(d=>({...d,analysisStatus:'complete',latestAnalysisAt:new Date().toISOString()}));const a=await api(`/documents/${id}/analyses`);setHistory(a.analyses||[]);const n=r.analysis?.findings?.length||0;toast(n?`Analysis completed with ${n} finding${n===1?'':'s'}.`:'Analysis completed. No brand issues were found in this version.');}catch(e){toast(e.message,'error');}finally{setBusy(false);}}
  async function submit(){try{await api(`/documents/${id}/submit`,{method:'POST',body:JSON.stringify({})});await load();toast('Submitted for human review.');}catch(e){toast(e.message,'error');}}
  async function postReviewComment(reviewId){try{await api(`/reviews/${reviewId}/comments`,{method:'POST',body:JSON.stringify({text:reviewComment})});setReviewComment('');await load();toast('Review comment posted.');}catch(e){toast(e.message,'error');}}
  async function markPublished(){try{await api(`/documents/${id}/publish`,{method:'POST',body:JSON.stringify({})});await load();toast('Document manually marked as published.');}catch(e){toast(e.message,'error');}}
  async function openVersion(v){const x=await api(`/documents/${id}/versions/${v._id}`);setCompare(x.version);}
  async function restoreVersion(v){if(!window.confirm(`Restore version ${v.versionNo}? This creates a new version and keeps all existing history.`))return;try{const r=await api(`/documents/${id}/versions/${v._id}/restore`,{method:'POST',body:JSON.stringify({})});setContent(r.document.content);setDoc(d=>({...d,version:r.document.version,status:'Revised',analysisStatus:'not_run'}));setAnalysis(null);await refreshVersions();toast('Restored as a new document version. Re-analyse before relying on a score.');}catch(e){toast(e.message,'error');}}
  const score=analysis?.overallScore;
+ const reportStale=!!analysis&&analysis.documentVersion!==doc?.version;
  const sourceParts=(()=>{const spans=(analysis?.findings||[]).filter(f=>Number.isInteger(f.span?.start)&&Number.isInteger(f.span?.end)&&f.span.end>f.span.start&&f.span.end<=content.length).slice().sort((a,b)=>a.span.start-b.span.start);const out=[];let cursor=0;for(const f of spans){if(f.span.start<cursor)continue;if(f.span.start>cursor)out.push({text:content.slice(cursor,f.span.start)});out.push({text:content.slice(f.span.start,f.span.end),finding:f});cursor=f.span.end;}if(cursor<content.length)out.push({text:content.slice(cursor)});return out;})();
  function focusFinding(f){setActive(f.issueId);if(f.span)document.getElementById(`finding-${f.issueId}`)?.scrollIntoView({behavior:'smooth',block:'center'});}
  if(!doc)return <div className="governance-loading">Loading document workspace…</div>;
@@ -63,7 +74,9 @@ export default function DocumentWorkspacePage({role='employee'}){
     <p className="chat-disclaimer">Responses are grounded in this document and retrieved brand knowledge. AI suggestions never approve or publish content.</p>
    </section>
    {pendingSuggestion&&<section className="governance-suggestion panel"><span className="eyebrow">REVIEW BEFORE APPLYING</span><h3>Proposed correction</h3><p className="suggestion-original">Original: {pendingSuggestion.originalText}</p><label>Replacement text<textarea rows="4" value={editSuggestion} onChange={e=>setEditSuggestion(e.target.value)}/></label><p>{pendingSuggestion.explanation}</p><div className="governance-actions"><button className="button button-quiet" onClick={rejectSuggestion}>Reject</button><button className="button button-dark" onClick={applySuggestion}><Check size={14}/> Apply fix</button></div></section>}
-   <aside className="governance-compliance panel"><span className="eyebrow">LATEST ANALYSIS</span><div className="governance-score">{score??'—'}<small>{score===null||score===undefined?'Not analysed':'/100'}</small></div><h3>{analysis?.complianceStatus||'No current report'}</h3><p>{analysis?.summary||'Run an analysis on the current document version to see real findings.'}</p>
+   <aside className="governance-compliance panel"><span className="eyebrow">LATEST ANALYSIS</span><div className="governance-score">{score??'—'}<small>{score===null||score===undefined?'Not analysed':'/100'}</small></div><h3>{analysis?.complianceStatus||'No current report'}</h3><p>{analysis?.summary||(history.length?'A report exists for this document but could not be loaded. Reload the page.':'No analysis has been saved for this document yet. Click Re-analyse to run one.')}</p>
+    {reportStale&&<p className="governance-notice"><AlertTriangle size={13}/> Scored at version {analysis.documentVersion}; current version is {doc.version}. Re-analyse for an up-to-date score.</p>}
+    {(analysis?.warnings||[]).map((w,i)=><p className="governance-notice" key={i}><AlertTriangle size={13}/> {w}</p>)}
     <div className="governance-dimensions">{(analysis?.dimensions||[]).map(d=><div key={d.key}><span>{d.label}</span><b>{d.assessed?`${d.score}/100`:'N/A'}</b></div>)}</div>
     <div className="governance-findings"><h3>Findings ({analysis?.findings?.length||0})</h3>{(analysis?.findings||[]).map(f=><article key={f.issueId} className={active===f.issueId?'active':''}><button className="finding-open" onClick={()=>focusFinding(f)}><span className={`severity-dot ${f.severity}`}/><span>{f.title}<small>{label(f.category)} · {label(f.severity)}</small></span></button>{active===f.issueId&&<div className="finding-detail"><p>{f.explanation}</p>{f.source?.verified?<blockquote>{f.source.document}{f.source.page?` · Page ${f.source.page}`:''}<br/>{f.evidenceQuote}</blockquote>:<small>No matching approved source verified; human judgement required.</small>}{f.suggestedCorrection&&<><p><b>Suggested:</b> {f.suggestedCorrection}</p><button className="button button-small button-quiet" onClick={()=>suggest(f)}>Apply fix as new version</button></>}</div>}</article>)}</div>
    </aside>
