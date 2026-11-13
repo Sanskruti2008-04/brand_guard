@@ -7,9 +7,19 @@ function finding(input) {
 function occurrences(text, term) {
   if (!term) return [];
   const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const regex = new RegExp(`\\b${escaped}\\b`, 'gi');
+  // \b fails when the term starts/ends with a non-word character (e.g. "99.999%"),
+  // so only apply word boundaries on word-character edges.
+  const left = /^\w/.test(term) ? '\\b' : '(?<!\\w)';
+  const right = /\w$/.test(term) ? '\\b' : '(?!\\w)';
+  const regex = new RegExp(`${left}${escaped}${right}`, 'gi');
   return [...text.matchAll(regex)].map(m => ({ start: m.index, end: m.index + m[0].length, value: m[0] }));
 }
+const cleanRuleText = value => String(value || '')
+  .trim()
+  .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+  .replace(/[.;]+$/, '')
+  .trim();
+
 export function runDeterministicRules({ text, structure = {}, terminology = [], facts = [], guidelines = [] }) {
   const findings = [];
   const lower = text.toLowerCase();
@@ -38,6 +48,54 @@ export function runDeterministicRules({ text, structure = {}, terminology = [], 
           reason: rule.usageNotes || 'Prefer the approved term.'
         }));
       }
+    }
+  }
+
+  // Brand Bibles usually state rules as prose ("Banned: cheap -> Preferred:
+  // cost-effective", "Never claim SOC 3"). Parse those lines so the analysis
+  // still produces findings when the AI provider is unavailable.
+  const guidelineTerminology = [];
+  const prohibitedClaims = [];
+  for (const guideline of guidelines) {
+    const source = { document: guideline.title, section: guideline.sourceReference || 'Brand Bible', verified: true };
+    for (const line of String(guideline.extractedText || '').split(/\n/)) {
+      const pair = line.match(/banned\s*:\s*(.+?)\s*(?:->|→|=>)\s*preferred\s*:\s*(.+)/i);
+      if (pair) guidelineTerminology.push({ banned: cleanRuleText(pair[1]), preferred: cleanRuleText(pair[2]), source });
+      const replacement = line.match(/replace\s+(.+?)\s+with\s+(.+?)\.?$/i);
+      if (replacement) guidelineTerminology.push({ banned: cleanRuleText(replacement[1]), preferred: cleanRuleText(replacement[2]), source });
+      const never = line.match(/never claim\s+([^\n]+?)(?:\.(?:\s|$)|$)/i);
+      if (never) for (const claim of never[1].split(/,\s*|\s+or\s+/i)) {
+        const value = cleanRuleText(claim);
+        if (value) prohibitedClaims.push({ claim: value, source });
+      }
+    }
+  }
+  const seenTerms = new Set(terminology.filter(rule => rule.bannedTerm).map(rule => String(rule.bannedTerm).toLowerCase()));
+  for (const rule of guidelineTerminology) {
+    if (!rule.banned || seenTerms.has(rule.banned.toLowerCase())) continue;
+    seenTerms.add(rule.banned.toLowerCase());
+    for (const hit of occurrences(text, rule.banned)) {
+      findings.push(finding({
+        category: 'terminology', severity: 'major', title: 'Banned terminology detected',
+        span: { start: hit.start, end: hit.end }, problematicText: hit.value,
+        finding: `The document uses the banned term “${hit.value}”.`,
+        explanation: `The active guideline source requires “${rule.preferred}” instead of “${rule.banned}”.`,
+        source: rule.source, evidenceQuote: `Banned: ${rule.banned} -> Preferred: ${rule.preferred}`,
+        suggestedCorrection: rule.preferred, reason: 'Use the approved terminology consistently.'
+      }));
+    }
+  }
+  for (const rule of prohibitedClaims) {
+    for (const hit of occurrences(text, rule.claim)) {
+      findings.push(finding({
+        category: 'fact', severity: 'critical', title: 'Prohibited claim detected',
+        span: { start: hit.start, end: hit.end }, problematicText: hit.value,
+        finding: `The document includes “${hit.value}”, which the Brand Bible says must never be claimed.`,
+        explanation: `The active guideline source states: Never claim ${rule.claim}.`,
+        source: rule.source, evidenceQuote: `Never claim ${rule.claim}`,
+        suggestedCorrection: 'Remove the claim or replace it with the approved value.',
+        reason: 'Verify claims against the approved facts register.'
+      }));
     }
   }
 
@@ -124,5 +182,14 @@ export function runDeterministicRules({ text, structure = {}, terminology = [], 
     reason: 'Improve readability without changing the intended meaning.', confidence: 0.85
   }));
 
-  return { findings, metrics: { wordCount: words.length, readabilityIndicator: readability, headingsChecked: headings.length, linksChecked: (structure.links || []).length, imagesChecked: images.length } };
+  const replaced = new Set();
+  const unique = [];
+  for (const item of findings) {
+    const key = `${item.category}:${item.problematicText || ''}:${item.span?.start ?? 'x'}:${item.span?.end ?? 'x'}`;
+    if (replaced.has(key)) continue;
+    replaced.add(key);
+    unique.push(item);
+  }
+  return { findings: unique, metrics: { wordCount: words.length, readabilityIndicator: readability, headingsChecked: headings.length, linksChecked: (structure.links || []).length, imagesChecked: images.length, terminologyRulesFromGuidelines: guidelineTerminology.length, prohibitedClaimsFromGuidelines: prohibitedClaims.length } };
 }
+
